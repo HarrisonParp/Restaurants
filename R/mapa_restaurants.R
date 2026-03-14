@@ -77,10 +77,11 @@ if (nrow(sin_coords) > 0) {
 
 restaurants <- restaurants %>%
   mutate(
-    hem_anat_clean = case_when(
-      tolower(hem_anat) %in% c("si", "sí", "yes", "1", "true") ~ "Sí",
-      tolower(hem_anat) %in% c("no", "0", "false") ~ "No",
-      TRUE ~ hem_anat
+ color = case_when(
+  hem_anat_clean == "Sí" ~ "#27AE60",
+  hem_anat_clean == "No" ~ "#E74C3C",
+  TRUE ~ "#7F8C8D"
+
     )
   )
 
