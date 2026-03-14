@@ -26,7 +26,8 @@ jobs:
 
       - name: Install R packages
         run: |
-          Rscript -e 'install.packages(c("readr","dplyr","stringr","tidygeocoder","leaflet","htmlwidgets"), repos="https://cloud.r-project.org")'
+          Rscript -e 'options(repos = c(CRAN = "https://cloud.r-project.org")); install.packages(c("readr","dplyr","stringr","tidygeocoder","leaflet","htmlwidgets"), dependencies = TRUE)'
+          Rscript -e 'library(readr); library(dplyr); library(stringr); library(tidygeocoder); library(leaflet); library(htmlwidgets)'
 
       - name: Generate map
         run: |
