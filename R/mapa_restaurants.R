@@ -4,7 +4,7 @@ library(stringr)
 library(tidygeocoder)
 library(leaflet)
 library(htmlwidgets)
-
+dir.create("site", showWarnings = FALSE)
 dir.create("docs", showWarnings = FALSE)
 
 sheet_csv <- "https://docs.google.com/spreadsheets/d/13xaY1vjBYn31O5sApf3BuOiyvpnS5oGp2cc8dH4E0jQ/export?format=csv&gid=0"
