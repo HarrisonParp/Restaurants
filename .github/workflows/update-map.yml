@@ -3,10 +3,10 @@ name: Deploy restaurant map
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "17 4 * * *"
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up R
         uses: r-lib/actions/setup-r@v2
@@ -38,14 +40,25 @@ jobs:
             any::leaflet
             any::htmlwidgets
             any::httr2
-            any::jsonlite
             any::purrr
             any::tibble
 
       - name: Generate map
         env:
-          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          TOMTOM_API_KEY: ${{ secrets.TOMTOM_API_KEY }}
         run: Rscript R/mapa_restaurants.R
+
+      - name: Commit updated cache
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/geocoded_cache.csv
+          if git diff --cached --quiet; then
+            echo "No cache changes to commit"
+          else
+            git commit -m "Update geocoding cache [skip ci]"
+            git push
+          fi
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
