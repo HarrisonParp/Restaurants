@@ -37,8 +37,14 @@ jobs:
             any::tidygeocoder
             any::leaflet
             any::htmlwidgets
+            any::httr2
+            any::jsonlite
+            any::purrr
+            any::tibble
 
       - name: Generate map
+        env:
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
         run: Rscript R/mapa_restaurants.R
 
       - name: Configure GitHub Pages
