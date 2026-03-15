@@ -5,9 +5,9 @@ on:
   push:
     branches: [main]
     paths:
-      - "scripts/**"
+      - "R/mapa_restaurants.R"
       - "data/**"
-      - ".github/workflows/build-map.yml"
+      - ".github/workflows/update-map.yml"
   schedule:
     - cron: "0 6 * * 1"
 
@@ -61,9 +61,14 @@ jobs:
             "tibble"
           ), repos = "https://cloud.r-project.org")'
 
+      - name: show repo files
+        run: |
+          pwd
+          ls -R
+
       - name: build map
         run: |
-          Rscript scripts/build_map.R
+          Rscript R/mapa_restaurants.R
 
       - name: commit updated cache and site
         run: |
