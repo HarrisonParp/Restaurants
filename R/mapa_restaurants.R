@@ -12,11 +12,15 @@ dir.create("data", showWarnings = FALSE, recursive = TRUE)
 
 sheet_csv <- "https://docs.google.com/spreadsheets/d/13xaY1vjBYn31O5sApf3BuOiyvpnS5oGp2cc8dH4E0jQ/export?format=csv&gid=0"
 cache_file <- "data/geocoded_cache.csv"
-tomtom_api_key <- Sys.getenv("TOMTOM_API_KEY")
+geoapify_api_key <- Sys.getenv("GEOAPIFY_API_KEY")
 
 # --------------------------------
 # utilidades
 # --------------------------------
+
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0) y else x
+}
 
 empty_cache <- function() {
   tibble(
@@ -98,6 +102,18 @@ extract_first <- function(obj, field) {
   }
 
   NA
+}
+
+safe_paste_parts <- function(...) {
+  parts <- c(...)
+  parts <- parts[!is.na(parts)]
+  parts <- as.character(parts)
+  parts <- trimws(parts)
+  parts <- parts[parts != ""]
+  if (length(parts) == 0) {
+    return(NA_character_)
+  }
+  paste(parts, collapse = ", ")
 }
 
 # --------------------------------
@@ -204,27 +220,24 @@ osm_result_is_good <- function(restaurant, display_name, class, type) {
 
   poi_like && has_name_match && !generic_place
 }
+
 # --------------------------------
 # Geoapify
 # --------------------------------
-
-`%||%` <- function(x, y) {
-  if (is.null(x) || length(x) == 0) y else x
-}
 
 country_to_code <- function(x) {
   x_n <- normalize_txt(x)
 
   dplyr::case_when(
-    x_n %in% c("es", "espana", "espana", "spain") ~ "es",
+    x_n %in% c("es", "espana", "spain") ~ "es",
     x_n %in% c("fr", "france", "francia") ~ "fr",
-    x_n %in% c("be", "belgium", "belgica", "belgica") ~ "be",
+    x_n %in% c("be", "belgium", "belgica") ~ "be",
     x_n %in% c("pt", "portugal") ~ "pt",
     x_n %in% c("it", "italy", "italia") ~ "it",
     x_n %in% c("de", "germany", "alemania") ~ "de",
     x_n %in% c("gb", "uk", "united kingdom", "reino unido") ~ "gb",
     x_n %in% c("ie", "ireland", "irlanda") ~ "ie",
-    x_n %in% c("nl", "netherlands", "paises bajos", "paises bajos", "holanda", "holland") ~ "nl",
+    x_n %in% c("nl", "netherlands", "paises bajos", "holanda", "holland") ~ "nl",
     nchar(x_n) == 2 ~ x_n,
     TRUE ~ NA_character_
   )
@@ -246,7 +259,7 @@ buscar_geoapify_city <- function(municipi, pais, api_key) {
   }
 
   country_code <- country_to_code(pais)
-  text_query <- paste(stats::na.omit(c(municipi, pais)), collapse = ", ")
+  text_query <- safe_paste_parts(municipi, pais)
 
   req <- request("https://api.geoapify.com/v1/geocode/search") %>%
     req_url_query(
@@ -487,11 +500,21 @@ restaurants <- tibble(
     mitja = rowMeans(cbind(nota_harry, nota_carla), na.rm = TRUE),
     mitja = ifelse(is.nan(mitja), NA_real_, mitja)
   ) %>%
-  filter(!if_all(c(restaurant, municipi), ~ is.na(.) | . == "")) %>%
+  filter(
+    (!is.na(restaurant) & restaurant != "") |
+      (!is.na(query_mapa) & query_mapa != "") |
+      (!is.na(lat_input) & !is.na(lon_input))
+  ) %>%
   mutate(
-    query_auto = paste(restaurant, municipi, pais, sep = ", "),
+    query_auto = pmap_chr(
+      list(restaurant, municipi, pais),
+      ~ safe_paste_parts(..1, ..2, ..3)
+    ),
     query_final = if_else(!is.na(query_mapa), query_mapa, query_auto),
-    cache_key = str_to_lower(str_squish(query_final))
+    cache_key = case_when(
+      !is.na(query_final) & query_final != "" ~ str_to_lower(str_squish(query_final)),
+      TRUE ~ paste0("manual_row_", row_id)
+    )
   )
 
 # --------------------------------
@@ -610,6 +633,7 @@ if (nrow(faltan_osm) > 0) {
     ) %>%
     select(-lat_osm, -lon_osm, -direccion_osm, -place_id_osm)
 }
+
 # --------------------------------
 # centroides de municipio para Geoapify
 # --------------------------------
@@ -650,6 +674,7 @@ if (nrow(city_lookup) > 0 && geoapify_api_key != "") {
       city_lon = NA_real_
     )
 }
+
 # --------------------------------
 # Geoapify solo para los no resueltos por OSM
 # --------------------------------
@@ -681,7 +706,7 @@ if (nrow(faltan_provider) > 0 && geoapify_api_key != "") {
       )
 
       message(
-        "Geoapify | restaurant=", restaurant,
+        "Geoapify | restaurant=", ifelse(is.na(restaurant), "NA", restaurant),
         " | municipi=", ifelse(is.na(municipi), "NA", municipi),
         " | candidato=", ifelse(is.na(res$provider_candidate_name[[1]]), "NA", res$provider_candidate_name[[1]]),
         " | score=", ifelse(is.na(res$provider_match_score[[1]]), "NA", round(res$provider_match_score[[1]], 3)),
@@ -725,6 +750,7 @@ if (nrow(faltan_provider) > 0 && geoapify_api_key != "") {
 } else if (nrow(faltan_provider) > 0 && geoapify_api_key == "") {
   message("No hay GEOAPIFY_API_KEY. Los registros no resueltos se quedarán sin coordenadas.")
 }
+
 # --------------------------------
 # visual
 # --------------------------------
@@ -790,7 +816,7 @@ cache_new <- restaurants %>%
   ) %>%
   transmute(
     cache_key,
-    query_final,
+    query_final = ifelse(is.na(query_final), NA_character_, query_final),
     lat,
     lon,
     direccion = ifelse(is.na(direccion), NA_character_, direccion),
@@ -864,4 +890,8 @@ message("Sin coordenadas: ", nrow(restaurants) - nrow(datos_mapa))
 
 if ("osm_match_status" %in% names(restaurants)) {
   print(table(restaurants$osm_match_status, useNA = "ifany"))
+}
+
+if ("provider_match_status" %in% names(restaurants)) {
+  print(table(restaurants$provider_match_status, useNA = "ifany"))
 }
