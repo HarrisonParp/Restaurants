@@ -161,10 +161,11 @@ restaurants <- tibble(
   )
 
 cache_existing <- read_cache_safe(cache_file)
-
+    
 restaurants <- restaurants %>%
   left_join(
     cache_existing %>%
+      select(-query_final) %>%
       rename(
         lat_cache = lat,
         lon_cache = lon,
@@ -188,7 +189,7 @@ restaurants <- restaurants %>%
     )
   ) %>%
   select(-lat_cache, -lon_cache, -direccion_cache, -place_id_cache, -fuente_coords_cache)
-
+    
 # 1) OSM primero para los que siguen sin coordenadas
 sin_coords <- restaurants %>%
   filter(is.na(lat) | is.na(lon))
