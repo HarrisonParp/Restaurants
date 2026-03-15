@@ -141,5 +141,5 @@ mapa_restaurants <- leaflet(datos_mapa) %>%
     popup = ~popup,
     label = ~restaurant
   )
-
+dir.create("docs", showWarnings = FALSE)
 saveWidget(mapa_restaurants, "docs/index.html", selfcontained = TRUE)
