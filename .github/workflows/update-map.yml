@@ -1,9 +1,15 @@
-name: Deploy restaurant map
+name: build restaurant map
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "data/**"
+      - ".github/workflows/build-map.yml"
   schedule:
-    - cron: "17 4 * * *"
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: write
@@ -11,7 +17,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: "pages"
   cancel-in-progress: true
 
 jobs:
@@ -19,51 +25,65 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up R
+      - name: setup R
         uses: r-lib/actions/setup-r@v2
-        with:
-          use-public-rspm: true
 
-      - name: Install R dependencies
-        uses: r-lib/actions/setup-r-dependencies@v2
-        with:
-          packages: |
-            any::readr
-            any::dplyr
-            any::stringr
-            any::leaflet
-            any::htmlwidgets
-            any::httr2
-            any::purrr
-            any::tibble
+      - name: install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libcurl4-openssl-dev \
+            libssl-dev \
+            libxml2-dev \
+            libfontconfig1-dev \
+            libharfbuzz-dev \
+            libfribidi-dev \
+            libfreetype6-dev \
+            libpng-dev \
+            libtiff5-dev \
+            libjpeg-dev
 
-      - name: Generate map
-        env:
-          GEOAPIFY_API_KEY: ${{ secrets.GEOAPIFY_API_KEY }}
-        run: Rscript R/mapa_restaurants.R
+      - name: install R packages
+        run: |
+          Rscript -e 'install.packages(c(
+            "readr",
+            "dplyr",
+            "stringr",
+            "leaflet",
+            "htmlwidgets",
+            "httr2",
+            "purrr",
+            "tibble"
+          ), repos = "https://cloud.r-project.org")'
 
-      - name: Commit updated cache
+      - name: build map
+        run: |
+          Rscript scripts/build_map.R
+
+      - name: commit updated cache and site
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/geocoded_cache.csv
-          if git diff --cached --quiet; then
-            echo "No cache changes to commit"
-          else
-            git commit -m "Update geocoding cache [skip ci]"
+
+          git add data/geocoded_cache.csv site/index.html || true
+
+          if ! git diff --cached --quiet; then
+            git commit -m "update map and geocoding cache"
             git push
+          else
+            echo "No changes to commit"
           fi
 
-      - name: Configure GitHub Pages
+      - name: setup pages
         uses: actions/configure-pages@v5
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+      - name: upload pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: ./site
 
@@ -75,6 +95,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Deploy to GitHub Pages
+      - name: deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
