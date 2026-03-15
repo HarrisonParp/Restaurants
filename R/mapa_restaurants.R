@@ -14,9 +14,9 @@ sheet_csv <- "https://docs.google.com/spreadsheets/d/13xaY1vjBYn31O5sApf3BuOiyvp
 cache_file <- "data/geocoded_cache.csv"
 tomtom_api_key <- Sys.getenv("TOMTOM_API_KEY")
 
-# -----------------------------
-# utilidades generales
-# -----------------------------
+# --------------------------------
+# utilidades
+# --------------------------------
 
 empty_cache <- function() {
   tibble(
@@ -100,9 +100,9 @@ extract_first <- function(obj, field) {
   NA
 }
 
-# -----------------------------
+# --------------------------------
 # OSM / Nominatim
-# -----------------------------
+# --------------------------------
 
 empty_osm_result <- function() {
   tibble(
@@ -128,9 +128,7 @@ buscar_osm_place <- function(query) {
       addressdetails = 1,
       namedetails = 1
     ) %>%
-    req_headers(
-      "Accept-Language" = "es"
-    ) %>%
+    req_headers("Accept-Language" = "es") %>%
     req_user_agent("restaurant-map-github-actions/1.0")
 
   resp <- tryCatch(req_perform(req), error = function(e) NULL)
@@ -169,44 +167,47 @@ osm_result_is_good <- function(restaurant, display_name, class, type) {
   class_n <- normalize_txt(class)
   type_n <- normalize_txt(type)
 
-  generic_place <- (
-    class_n %in% c("place", "boundary") ||
+  if (is.na(display_name) || trimws(display_name) == "") {
+    return(FALSE)
+  }
+
+  poi_like <- (
+    class_n %in% c("amenity", "shop", "tourism", "leisure") ||
       type_n %in% c(
-        "city", "town", "village", "municipality",
-        "administrative", "county", "state", "region",
-        "suburb", "hamlet", "locality", "postcode",
-        "neighbourhood", "quarter", "isolated_dwelling"
+        "restaurant", "cafe", "fast_food", "bar", "pub", "bakery",
+        "food_court", "ice_cream"
       )
   )
 
-  poi_like <- (
-    class_n %in% c("amenity", "shop", "tourism", "leisure", "building") ||
+  generic_place <- (
+    class_n %in% c("place", "boundary", "highway") ||
       type_n %in% c(
-        "restaurant", "cafe", "fast_food", "bar", "pub",
-        "food_court", "ice_cream", "bakery"
+        "city", "town", "village", "municipality", "administrative",
+        "county", "state", "region", "suburb", "hamlet",
+        "locality", "postcode", "neighbourhood", "quarter", "road",
+        "residential"
       )
   )
 
   words_rest <- unlist(strsplit(restaurant_n, " ", fixed = TRUE))
   words_rest <- words_rest[nchar(words_rest) >= 4]
 
-  has_name_match <- FALSE
-  if (length(words_rest) > 0 && !is.na(display_n) && display_n != "") {
-    has_name_match <- any(vapply(
-      words_rest,
-      function(w) grepl(paste0("\\b", w, "\\b"), display_n),
-      logical(1)
-    ))
+  if (length(words_rest) == 0) {
+    return(FALSE)
   }
 
-  # Aceptamos si parece un POI real o si el nombre encaja,
-  # pero rechazamos si claramente es una ciudad/área administrativa.
-  (poi_like || has_name_match) && !generic_place
+  has_name_match <- any(vapply(
+    words_rest,
+    function(w) grepl(paste0("\\b", w, "\\b"), display_n),
+    logical(1)
+  ))
+
+  poi_like && has_name_match && !generic_place
 }
 
-# -----------------------------
+# --------------------------------
 # TomTom
-# -----------------------------
+# --------------------------------
 
 empty_tomtom_result <- function() {
   tibble(
@@ -268,9 +269,9 @@ buscar_tomtom_place <- function(query, api_key) {
   )
 }
 
-# -----------------------------
+# --------------------------------
 # lectura de datos
-# -----------------------------
+# --------------------------------
 
 raw <- read_csv(
   sheet_csv,
@@ -308,9 +309,9 @@ restaurants <- tibble(
     cache_key = str_to_lower(str_squish(query_final))
   )
 
-# -----------------------------
-# cargar caché
-# -----------------------------
+# --------------------------------
+# caché
+# --------------------------------
 
 cache_existing <- read_cache_safe(cache_file)
 
@@ -330,6 +331,7 @@ restaurants <- restaurants %>%
   mutate(
     has_manual_coords = !is.na(lat_input) & !is.na(lon_input),
     has_cached_coords = !is.na(lat_cache) & !is.na(lon_cache),
+
     lat = coalesce(lat_input, lat_cache),
     lon = coalesce(lon_input, lon_cache),
     direccion = direccion_cache,
@@ -338,13 +340,26 @@ restaurants <- restaurants %>%
       has_manual_coords ~ "Manual",
       has_cached_coords ~ fuente_coords_cache,
       TRUE ~ NA_character_
-    )
-  ) %>%
-  select(-lat_cache, -lon_cache, -direccion_cache, -place_id_cache, -fuente_coords_cache)
+    ),
 
-# -----------------------------
-# OSM primero, validando que no haya encontrado solo la ciudad
-# -----------------------------
+    cache_incompleta = !has_manual_coords &
+      !is.na(lat) & !is.na(lon) &
+      (is.na(direccion) | direccion == ""),
+
+    lat = ifelse(cache_incompleta, NA_real_, lat),
+    lon = ifelse(cache_incompleta, NA_real_, lon),
+    direccion = ifelse(cache_incompleta, NA_character_, direccion),
+    place_id = ifelse(cache_incompleta, NA_character_, place_id),
+    fuente_coords = ifelse(cache_incompleta, NA_character_, fuente_coords)
+  ) %>%
+  select(
+    -lat_cache, -lon_cache, -direccion_cache,
+    -place_id_cache, -fuente_coords_cache
+  )
+
+# --------------------------------
+# OSM primero, sin fallback por municipio
+# --------------------------------
 
 faltan_osm <- restaurants %>%
   filter(is.na(lat) | is.na(lon)) %>%
@@ -360,18 +375,30 @@ if (nrow(faltan_osm) > 0) {
 
       res <- buscar_osm_place(query_final)
 
+      display_name_osm <- res$osm_display_name[[1]]
+      class_osm <- res$osm_class[[1]]
+      type_osm <- res$osm_type[[1]]
+
       good_match <- osm_result_is_good(
         restaurant = restaurant,
-        display_name = res$osm_display_name[[1]],
-        class = res$osm_class[[1]],
-        type = res$osm_type[[1]]
+        display_name = display_name_osm,
+        class = class_osm,
+        type = type_osm
+      )
+
+      message(
+        "OSM | query=", query_final,
+        " | display_name=", ifelse(is.na(display_name_osm), "NA", display_name_osm),
+        " | class=", ifelse(is.na(class_osm), "NA", class_osm),
+        " | type=", ifelse(is.na(type_osm), "NA", type_osm),
+        " | accepted=", good_match
       )
 
       tibble(
         row_id = row_id,
         lat_osm = if (good_match) res$lat_osm_raw[[1]] else NA_real_,
         lon_osm = if (good_match) res$lon_osm_raw[[1]] else NA_real_,
-        direccion_osm = if (good_match) res$osm_display_name[[1]] else NA_character_,
+        direccion_osm = if (good_match) display_name_osm else NA_character_,
         place_id_osm = if (good_match) res$osm_place_id[[1]] else NA_character_,
         osm_match_status = case_when(
           is.na(res$lat_osm_raw[[1]]) | is.na(res$lon_osm_raw[[1]]) ~ "sin_resultado",
@@ -399,9 +426,9 @@ if (nrow(faltan_osm) > 0) {
     select(-lat_osm, -lon_osm, -direccion_osm, -place_id_osm)
 }
 
-# -----------------------------
-# TomTom solo para los que OSM no resolvió correctamente
-# -----------------------------
+# --------------------------------
+# TomTom solo para los no resueltos por OSM
+# --------------------------------
 
 faltan_provider <- restaurants %>%
   filter(is.na(lat) | is.na(lon)) %>%
@@ -447,9 +474,9 @@ if (nrow(faltan_provider) > 0 && tomtom_api_key != "") {
   message("No hay TOMTOM_API_KEY. Los registros no resueltos se quedarán sin coordenadas.")
 }
 
-# -----------------------------
-# limpieza visual
-# -----------------------------
+# --------------------------------
+# visual
+# --------------------------------
 
 restaurants <- restaurants %>%
   mutate(
@@ -501,12 +528,15 @@ restaurants <- restaurants %>%
     )
   )
 
-# -----------------------------
-# guardar caché actualizado
-# -----------------------------
+# --------------------------------
+# guardar caché
+# --------------------------------
 
 cache_new <- restaurants %>%
-  filter(!is.na(lat), !is.na(lon)) %>%
+  filter(
+    !is.na(lat), !is.na(lon),
+    fuente_coords == "Manual" | !(is.na(direccion) | direccion == "")
+  ) %>%
   transmute(
     cache_key,
     query_final,
@@ -526,9 +556,9 @@ cache_final <- bind_rows(cache_new, cache_existing) %>%
 
 write_csv(cache_final, cache_file, na = "")
 
-# -----------------------------
+# --------------------------------
 # mapa
-# -----------------------------
+# --------------------------------
 
 datos_mapa <- restaurants %>%
   filter(!is.na(lat), !is.na(lon))
@@ -571,12 +601,12 @@ if (nrow(datos_mapa) == 1) {
 
 saveWidget(mapa_restaurants, "site/index.html", selfcontained = TRUE)
 
-# -----------------------------
+# --------------------------------
 # logs
-# -----------------------------
+# --------------------------------
 
 message("Mapa generado en site/index.html")
-message("Caché actualizado en data/geocoded_cache.csv")
+message("Caché actualizada en data/geocoded_cache.csv")
 message("Total restaurantes: ", nrow(restaurants))
 message("Con coordenadas: ", nrow(datos_mapa))
 message("Sin coordenadas: ", nrow(restaurants) - nrow(datos_mapa))
