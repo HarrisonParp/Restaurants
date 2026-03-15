@@ -36,7 +36,6 @@ jobs:
             any::readr
             any::dplyr
             any::stringr
-            any::tidygeocoder
             any::leaflet
             any::htmlwidgets
             any::httr2
@@ -45,7 +44,7 @@ jobs:
 
       - name: Generate map
         env:
-          TOMTOM_API_KEY: ${{ secrets.TOMTOM_API_KEY }}
+          GEOAPIFY_API_KEY: ${{ secrets.GEOAPIFY_API_KEY }}
         run: Rscript R/mapa_restaurants.R
 
       - name: Commit updated cache
