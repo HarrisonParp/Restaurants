@@ -204,68 +204,253 @@ osm_result_is_good <- function(restaurant, display_name, class, type) {
 
   poi_like && has_name_match && !generic_place
 }
-
 # --------------------------------
-# TomTom
+# Geoapify
 # --------------------------------
 
-empty_tomtom_result <- function() {
-  tibble(
-    place_id_provider = NA_character_,
-    provider_address = NA_character_,
-    lat_provider = NA_real_,
-    lon_provider = NA_real_,
-    fuente_provider = NA_character_
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0) y else x
+}
+
+country_to_code <- function(x) {
+  x_n <- normalize_txt(x)
+
+  dplyr::case_when(
+    x_n %in% c("es", "espana", "espana", "spain") ~ "es",
+    x_n %in% c("fr", "france", "francia") ~ "fr",
+    x_n %in% c("be", "belgium", "belgica", "belgica") ~ "be",
+    x_n %in% c("pt", "portugal") ~ "pt",
+    x_n %in% c("it", "italy", "italia") ~ "it",
+    x_n %in% c("de", "germany", "alemania") ~ "de",
+    x_n %in% c("gb", "uk", "united kingdom", "reino unido") ~ "gb",
+    x_n %in% c("ie", "ireland", "irlanda") ~ "ie",
+    x_n %in% c("nl", "netherlands", "paises bajos", "paises bajos", "holanda", "holland") ~ "nl",
+    nchar(x_n) == 2 ~ x_n,
+    TRUE ~ NA_character_
   )
 }
 
-buscar_tomtom_place <- function(query, api_key) {
-  if (is.na(query) || query == "" || api_key == "") {
-    return(empty_tomtom_result())
+empty_geoapify_city_result <- function() {
+  tibble(
+    city_query = NA_character_,
+    city_place_id = NA_character_,
+    city_name = NA_character_,
+    city_lat = NA_real_,
+    city_lon = NA_real_
+  )
+}
+
+buscar_geoapify_city <- function(municipi, pais, api_key) {
+  if (is.na(municipi) || municipi == "" || api_key == "") {
+    return(empty_geoapify_city_result())
   }
 
-  url <- paste0(
-    "https://api.tomtom.com/search/2/search/",
-    URLencode(query, reserved = TRUE),
-    ".json"
-  )
+  country_code <- country_to_code(pais)
+  text_query <- paste(stats::na.omit(c(municipi, pais)), collapse = ", ")
 
-  req <- request(url) %>%
+  req <- request("https://api.geoapify.com/v1/geocode/search") %>%
     req_url_query(
-      key = api_key,
+      text = text_query,
+      type = "city",
+      format = "json",
       limit = 1,
-      language = "es-ES",
-      typeahead = "false"
+      lang = "es",
+      apiKey = api_key
     )
+
+  if (!is.na(country_code)) {
+    req <- req %>%
+      req_url_query(filter = paste0("countrycode:", country_code))
+  }
 
   resp <- tryCatch(req_perform(req), error = function(e) NULL)
 
   if (is.null(resp)) {
-    return(empty_tomtom_result())
+    return(empty_geoapify_city_result())
   }
 
   dat <- tryCatch(resp_body_json(resp, simplifyVector = TRUE), error = function(e) NULL)
 
   if (is.null(dat) || !"results" %in% names(dat)) {
-    return(empty_tomtom_result())
+    return(empty_geoapify_city_result())
   }
 
   results <- dat$results
 
   if (is.null(results)) {
-    return(empty_tomtom_result())
+    return(empty_geoapify_city_result())
   }
 
   if (is.data.frame(results) && nrow(results) == 0) {
-    return(empty_tomtom_result())
+    return(empty_geoapify_city_result())
   }
 
   tibble(
-    place_id_provider = as.character(extract_first(results, "id")),
-    provider_address = as.character(extract_first(results, "address.freeformAddress")),
-    lat_provider = suppressWarnings(as.numeric(extract_first(results, "position.lat"))),
-    lon_provider = suppressWarnings(as.numeric(extract_first(results, "position.lon"))),
-    fuente_provider = "TomTom"
+    city_query = text_query,
+    city_place_id = as.character(extract_first(results, "place_id")),
+    city_name = as.character(extract_first(results, "formatted")),
+    city_lat = suppressWarnings(as.numeric(extract_first(results, "lat"))),
+    city_lon = suppressWarnings(as.numeric(extract_first(results, "lon")))
+  )
+}
+
+empty_geoapify_result <- function() {
+  tibble(
+    place_id_provider = NA_character_,
+    provider_address = NA_character_,
+    lat_provider = NA_real_,
+    lon_provider = NA_real_,
+    fuente_provider = NA_character_,
+    provider_match_score = NA_real_,
+    provider_candidate_name = NA_character_,
+    provider_candidate_city = NA_character_,
+    provider_candidate_categories = NA_character_,
+    provider_distance = NA_real_,
+    provider_match_status = NA_character_
+  )
+}
+
+name_match_score <- function(target, candidate) {
+  target_n <- normalize_txt(target)
+  cand_n <- normalize_txt(candidate)
+
+  if (target_n == "" || cand_n == "") {
+    return(0)
+  }
+
+  if (target_n == cand_n) {
+    return(1)
+  }
+
+  target_words <- unique(unlist(strsplit(target_n, " ", fixed = TRUE)))
+  cand_words <- unique(unlist(strsplit(cand_n, " ", fixed = TRUE)))
+
+  target_words <- target_words[nchar(target_words) >= 3]
+  cand_words <- cand_words[nchar(cand_words) >= 3]
+
+  token_score <- if (length(target_words) == 0) {
+    0
+  } else {
+    sum(target_words %in% cand_words) / length(target_words)
+  }
+
+  edit_score <- 1 - (utils::adist(target_n, cand_n)[1] / max(nchar(target_n), nchar(cand_n), 1))
+  edit_score <- max(0, min(1, edit_score))
+
+  max(token_score, edit_score)
+}
+
+municipality_match_score <- function(municipi, candidate_city, formatted) {
+  muni_n <- normalize_txt(municipi)
+  haystack <- normalize_txt(paste(candidate_city, formatted))
+
+  if (muni_n == "" || haystack == "") {
+    return(0)
+  }
+
+  as.numeric(grepl(paste0("\\b", muni_n, "\\b"), haystack))
+}
+
+distance_match_score <- function(distance_m) {
+  if (is.na(distance_m)) {
+    return(0.5)
+  }
+
+  max(0, 1 - (distance_m / 10000))
+}
+
+build_geoapify_candidates <- function(features) {
+  if (is.null(features) || length(features) == 0) {
+    return(tibble())
+  }
+
+  map_dfr(features, function(ft) {
+    props <- ft$properties %||% list()
+    cats <- props$categories %||% character()
+
+    tibble(
+      provider_name = as.character(props$name %||% NA_character_),
+      provider_address = as.character(props$formatted %||% NA_character_),
+      place_id_provider = as.character(props$place_id %||% NA_character_),
+      lat_provider = suppressWarnings(as.numeric(props$lat %||% NA_real_)),
+      lon_provider = suppressWarnings(as.numeric(props$lon %||% NA_real_)),
+      provider_distance = suppressWarnings(as.numeric(props$distance %||% NA_real_)),
+      provider_city = as.character(props$city %||% NA_character_),
+      provider_categories = paste(as.character(cats), collapse = "|")
+    )
+  })
+}
+
+buscar_geoapify_place <- function(restaurant, municipi, city_lat, city_lon, api_key) {
+  if (is.na(restaurant) || restaurant == "" || api_key == "") {
+    return(empty_geoapify_result())
+  }
+
+  if (is.na(city_lat) || is.na(city_lon)) {
+    return(empty_geoapify_result() %>% mutate(provider_match_status = "sin_centroide_municipio"))
+  }
+
+  req <- request("https://api.geoapify.com/v2/places") %>%
+    req_url_query(
+      categories = "catering.restaurant,catering.cafe,catering.bar,catering.pub,catering.fast_food",
+      name = restaurant,
+      filter = paste0("circle:", city_lon, ",", city_lat, ",8000"),
+      bias = paste0("proximity:", city_lon, ",", city_lat),
+      limit = 5,
+      lang = "es",
+      apiKey = api_key
+    )
+
+  resp <- tryCatch(req_perform(req), error = function(e) NULL)
+
+  if (is.null(resp)) {
+    return(empty_geoapify_result())
+  }
+
+  dat <- tryCatch(resp_body_json(resp, simplifyVector = FALSE), error = function(e) NULL)
+
+  if (is.null(dat) || is.null(dat$features) || length(dat$features) == 0) {
+    return(empty_geoapify_result() %>% mutate(provider_match_status = "sin_resultado"))
+  }
+
+  candidates <- build_geoapify_candidates(dat$features)
+
+  if (nrow(candidates) == 0) {
+    return(empty_geoapify_result() %>% mutate(provider_match_status = "sin_resultado"))
+  }
+
+  candidates <- candidates %>%
+    mutate(
+      name_score = vapply(provider_name, function(x) name_match_score(restaurant, x), numeric(1)),
+      municipality_score = vapply(
+        seq_len(n()),
+        function(i) municipality_match_score(municipi, provider_city[i], provider_address[i]),
+        numeric(1)
+      ),
+      distance_score = vapply(provider_distance, distance_match_score, numeric(1)),
+      provider_match_score = 0.7 * name_score + 0.2 * municipality_score + 0.1 * distance_score
+    ) %>%
+    arrange(desc(provider_match_score), provider_distance)
+
+  best <- candidates %>% slice(1)
+
+  accepted <- !is.na(best$lat_provider[[1]]) &&
+    !is.na(best$lon_provider[[1]]) &&
+    best$name_score[[1]] >= 0.55 &&
+    best$provider_match_score[[1]] >= 0.60
+
+  tibble(
+    place_id_provider = if (accepted) best$place_id_provider[[1]] else NA_character_,
+    provider_address = if (accepted) best$provider_address[[1]] else NA_character_,
+    lat_provider = if (accepted) best$lat_provider[[1]] else NA_real_,
+    lon_provider = if (accepted) best$lon_provider[[1]] else NA_real_,
+    fuente_provider = if (accepted) "Geoapify" else NA_character_,
+    provider_match_score = best$provider_match_score[[1]],
+    provider_candidate_name = best$provider_name[[1]],
+    provider_candidate_city = best$provider_city[[1]],
+    provider_candidate_categories = best$provider_categories[[1]],
+    provider_distance = best$provider_distance[[1]],
+    provider_match_status = if (accepted) "aceptado" else "rechazado"
   )
 }
 
@@ -425,24 +610,83 @@ if (nrow(faltan_osm) > 0) {
     ) %>%
     select(-lat_osm, -lon_osm, -direccion_osm, -place_id_osm)
 }
-
 # --------------------------------
-# TomTom solo para los no resueltos por OSM
+# centroides de municipio para Geoapify
+# --------------------------------
+
+city_lookup <- restaurants %>%
+  filter((is.na(lat) | is.na(lon)) & !is.na(municipi) & municipi != "") %>%
+  distinct(municipi, pais)
+
+if (nrow(city_lookup) > 0 && geoapify_api_key != "") {
+  message("Consultando centroides de municipio con Geoapify para ", nrow(city_lookup), " municipios...")
+
+  city_results <- pmap_dfr(
+    list(city_lookup$municipi, city_lookup$pais),
+    function(municipi, pais) {
+      Sys.sleep(0.25)
+
+      res <- buscar_geoapify_city(municipi, pais, geoapify_api_key)
+
+      tibble(
+        municipi = municipi,
+        pais = pais,
+        city_place_id = res$city_place_id[[1]],
+        city_name = res$city_name[[1]],
+        city_lat = res$city_lat[[1]],
+        city_lon = res$city_lon[[1]]
+      )
+    }
+  )
+
+  restaurants <- restaurants %>%
+    left_join(city_results, by = c("municipi", "pais"))
+} else {
+  restaurants <- restaurants %>%
+    mutate(
+      city_place_id = NA_character_,
+      city_name = NA_character_,
+      city_lat = NA_real_,
+      city_lon = NA_real_
+    )
+}
+# --------------------------------
+# Geoapify solo para los no resueltos por OSM
 # --------------------------------
 
 faltan_provider <- restaurants %>%
   filter(is.na(lat) | is.na(lon)) %>%
-  select(row_id, query_final)
+  select(row_id, restaurant, municipi, city_lat, city_lon)
 
-if (nrow(faltan_provider) > 0 && tomtom_api_key != "") {
-  message("Consultando TomTom para ", nrow(faltan_provider), " registros...")
+if (nrow(faltan_provider) > 0 && geoapify_api_key != "") {
+  message("Consultando Geoapify para ", nrow(faltan_provider), " registros...")
 
   provider_results <- pmap_dfr(
-    list(faltan_provider$row_id, faltan_provider$query_final),
-    function(row_id, query_final) {
+    list(
+      faltan_provider$row_id,
+      faltan_provider$restaurant,
+      faltan_provider$municipi,
+      faltan_provider$city_lat,
+      faltan_provider$city_lon
+    ),
+    function(row_id, restaurant, municipi, city_lat, city_lon) {
       Sys.sleep(0.25)
 
-      res <- buscar_tomtom_place(query_final, tomtom_api_key)
+      res <- buscar_geoapify_place(
+        restaurant = restaurant,
+        municipi = municipi,
+        city_lat = city_lat,
+        city_lon = city_lon,
+        api_key = geoapify_api_key
+      )
+
+      message(
+        "Geoapify | restaurant=", restaurant,
+        " | municipi=", ifelse(is.na(municipi), "NA", municipi),
+        " | candidato=", ifelse(is.na(res$provider_candidate_name[[1]]), "NA", res$provider_candidate_name[[1]]),
+        " | score=", ifelse(is.na(res$provider_match_score[[1]]), "NA", round(res$provider_match_score[[1]], 3)),
+        " | status=", ifelse(is.na(res$provider_match_status[[1]]), "NA", res$provider_match_status[[1]])
+      )
 
       tibble(
         row_id = row_id,
@@ -450,7 +694,13 @@ if (nrow(faltan_provider) > 0 && tomtom_api_key != "") {
         provider_address = res$provider_address[[1]],
         lat_provider = res$lat_provider[[1]],
         lon_provider = res$lon_provider[[1]],
-        fuente_provider = res$fuente_provider[[1]]
+        fuente_provider = res$fuente_provider[[1]],
+        provider_match_score = res$provider_match_score[[1]],
+        provider_candidate_name = res$provider_candidate_name[[1]],
+        provider_candidate_city = res$provider_candidate_city[[1]],
+        provider_candidate_categories = res$provider_candidate_categories[[1]],
+        provider_distance = res$provider_distance[[1]],
+        provider_match_status = res$provider_match_status[[1]]
       )
     }
   )
@@ -465,15 +715,16 @@ if (nrow(faltan_provider) > 0 && tomtom_api_key != "") {
       fuente_coords = case_when(
         has_manual_coords ~ "Manual",
         !is.na(fuente_coords) ~ fuente_coords,
-        !is.na(lat_provider) & !is.na(lon_provider) ~ "TomTom",
+        !is.na(lat_provider) & !is.na(lon_provider) ~ "Geoapify",
         TRUE ~ NA_character_
       )
     ) %>%
-    select(-place_id_provider, -provider_address, -lat_provider, -lon_provider, -fuente_provider)
-} else if (nrow(faltan_provider) > 0 && tomtom_api_key == "") {
-  message("No hay TOMTOM_API_KEY. Los registros no resueltos se quedarán sin coordenadas.")
+    select(
+      -place_id_provider, -provider_address, -lat_provider, -lon_provider, -fuente_provider
+    )
+} else if (nrow(faltan_provider) > 0 && geoapify_api_key == "") {
+  message("No hay GEOAPIFY_API_KEY. Los registros no resueltos se quedarán sin coordenadas.")
 }
-
 # --------------------------------
 # visual
 # --------------------------------
