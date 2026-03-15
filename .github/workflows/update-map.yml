@@ -33,33 +33,18 @@ jobs:
       - name: setup R
         uses: r-lib/actions/setup-r@v2
 
-      - name: install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libcurl4-openssl-dev \
-            libssl-dev \
-            libxml2-dev \
-            libfontconfig1-dev \
-            libharfbuzz-dev \
-            libfribidi-dev \
-            libfreetype6-dev \
-            libpng-dev \
-            libtiff5-dev \
-            libjpeg-dev
-
-      - name: install R packages
-        run: |
-          Rscript -e 'install.packages(c(
-            "readr",
-            "dplyr",
-            "stringr",
-            "leaflet",
-            "htmlwidgets",
-            "httr2",
-            "purrr",
-            "tibble"
-          ), repos = "https://cloud.r-project.org")'
+      - name: setup R dependencies
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::readr
+            any::dplyr
+            any::stringr
+            any::leaflet
+            any::htmlwidgets
+            any::httr2
+            any::purrr
+            any::tibble
 
       - name: show repo files
         run: |
