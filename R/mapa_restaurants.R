@@ -5,7 +5,7 @@ library(tidygeocoder)
 library(leaflet)
 library(htmlwidgets)
 
-dir.create("site", showWarnings = FALSE)
+dir.create("docs", showWarnings = FALSE)
 
 sheet_csv <- "https://docs.google.com/spreadsheets/d/13xaY1vjBYn31O5sApf3BuOiyvpnS5oGp2cc8dH4E0jQ/export?format=csv&gid=0"
 
@@ -77,11 +77,23 @@ if (nrow(sin_coords) > 0) {
 
 restaurants <- restaurants %>%
   mutate(
- color = case_when(
-  hem_anat_clean == "Sí" ~ "#27AE60",
-  hem_anat_clean == "No" ~ "#E74C3C",
-  TRUE ~ "#7F8C8D"
-
+    hem_anat_clean = case_when(
+      tolower(hem_anat) %in% c("si", "sí", "yes", "1", "true") ~ "Sí",
+      tolower(hem_anat) %in% c("no", "0", "false") ~ "No",
+      TRUE ~ hem_anat
+    ),
+    color = case_when(
+      hem_anat_clean == "Sí" ~ "#27AE60",
+      hem_anat_clean == "No" ~ "#E74C3C",
+      TRUE ~ "#7F8C8D"
+    ),
+    popup = paste0(
+      "<b>", restaurant, "</b><br>",
+      "<b>Municipi:</b> ", municipi, "<br>",
+      "<b>Hem anat:</b> ", ifelse(is.na(hem_anat_clean) | hem_anat_clean == "", "No disponible", hem_anat_clean), "<br>",
+      "<b>Nota Harry:</b> ", ifelse(is.na(nota_harry), "No disponible", nota_harry), "<br>",
+      "<b>Nota Carla:</b> ", ifelse(is.na(nota_carla), "No disponible", nota_carla), "<br>",
+      "<b>Mitja:</b> ", ifelse(is.na(mitja), "No disponible", round(mitja, 1))
     )
   )
 
@@ -107,27 +119,16 @@ if (length(notes_valides) == 0) {
   }
 }
 
-restaurants <- restaurants %>%
-  mutate(
-    color = case_when(
-      hem_anat_clean == "Sí" ~ "#2E86DE",
-      hem_anat_clean == "No" ~ "#E74C3C",
-      TRUE ~ "#7F8C8D"
-    ),
-    popup = paste0(
-      "<b>", restaurant, "</b><br>",
-      "<b>Municipi:</b> ", municipi, "<br>",
-      "<b>Hem anat:</b> ", ifelse(is.na(hem_anat_clean) | hem_anat_clean == "", "No disponible", hem_anat_clean), "<br>",
-      "<b>Nota Harry:</b> ", ifelse(is.na(nota_harry), "No disponible", nota_harry), "<br>",
-      "<b>Nota Carla:</b> ", ifelse(is.na(nota_carla), "No disponible", nota_carla), "<br>",
-      "<b>Mitja:</b> ", ifelse(is.na(mitja), "No disponible", round(mitja, 1))
-    )
-  )
+datos_mapa <- restaurants %>%
+  filter(!is.na(lat), !is.na(lon))
 
-mapa_restaurants <- restaurants %>%
-  filter(!is.na(lat), !is.na(lon)) %>%
-  leaflet() %>%
+if (nrow(datos_mapa) == 0) {
+  stop("No hay restaurantes con coordenadas.")
+}
+
+mapa_restaurants <- leaflet(datos_mapa) %>%
   addProviderTiles("CartoDB.Positron") %>%
+  setView(lng = 2.1734, lat = 41.3851, zoom = 11) %>%
   addCircleMarkers(
     lng = ~lon,
     lat = ~lat,
@@ -141,4 +142,4 @@ mapa_restaurants <- restaurants %>%
     label = ~restaurant
   )
 
-saveWidget(mapa_restaurants, "site/index.html", selfcontained = TRUE)
+saveWidget(mapa_restaurants, "docs/index.html", selfcontained = TRUE)
