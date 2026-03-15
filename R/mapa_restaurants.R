@@ -467,6 +467,142 @@ buscar_geoapify_place <- function(restaurant, municipi, city_lat, city_lon, api_
   )
 }
 
+    empty_geoapify_text_result <- function() {
+  tibble(
+    place_id_provider = NA_character_,
+    provider_address = NA_character_,
+    lat_provider = NA_real_,
+    lon_provider = NA_real_,
+    fuente_provider = NA_character_,
+    provider_match_score = NA_real_,
+    provider_candidate_name = NA_character_,
+    provider_candidate_city = NA_character_,
+    provider_candidate_categories = NA_character_,
+    provider_distance = NA_real_,
+    provider_match_status = NA_character_
+  )
+}
+
+buscar_geoapify_text <- function(query, restaurant, municipi, city_lat, city_lon, api_key) {
+  if (is.na(query) || query == "" || api_key == "") {
+    return(empty_geoapify_text_result())
+  }
+
+  req <- request("https://api.geoapify.com/v1/geocode/search") %>%
+    req_url_query(
+      text = query,
+      format = "json",
+      limit = 5,
+      lang = "es",
+      apiKey = api_key
+    )
+
+  if (!is.na(city_lat) && !is.na(city_lon)) {
+    req <- req %>%
+      req_url_query(
+        bias = paste0("proximity:", city_lon, ",", city_lat),
+        filter = paste0("circle:", city_lon, ",", city_lat, ",12000")
+      )
+  }
+
+  resp <- tryCatch(req_perform(req), error = function(e) NULL)
+
+  if (is.null(resp)) {
+    return(empty_geoapify_text_result())
+  }
+
+  dat <- tryCatch(resp_body_json(resp, simplifyVector = TRUE), error = function(e) NULL)
+
+  if (is.null(dat) || !"results" %in% names(dat) || is.null(dat$results)) {
+    return(empty_geoapify_text_result() %>% mutate(provider_match_status = "sin_resultado_texto"))
+  }
+
+  results <- dat$results
+
+  if (!is.data.frame(results) || nrow(results) == 0) {
+    return(empty_geoapify_text_result() %>% mutate(provider_match_status = "sin_resultado_texto"))
+  }
+
+  provider_name_vec <- if ("name" %in% names(results)) {
+    as.character(results$name)
+  } else {
+    as.character(results$formatted)
+  }
+
+  provider_city_vec <- if ("city" %in% names(results)) {
+    as.character(results$city)
+  } else {
+    rep(NA_character_, nrow(results))
+  }
+
+  provider_distance_vec <- if ("distance" %in% names(results)) {
+    suppressWarnings(as.numeric(results$distance))
+  } else {
+    rep(NA_real_, nrow(results))
+  }
+
+  provider_result_type_vec <- if ("result_type" %in% names(results)) {
+    as.character(results$result_type)
+  } else {
+    rep(NA_character_, nrow(results))
+  }
+
+  candidates <- tibble(
+    provider_name = provider_name_vec,
+    provider_address = as.character(results$formatted),
+    place_id_provider = as.character(results$place_id),
+    lat_provider = suppressWarnings(as.numeric(results$lat)),
+    lon_provider = suppressWarnings(as.numeric(results$lon)),
+    provider_distance = provider_distance_vec,
+    provider_city = provider_city_vec,
+    provider_result_type = provider_result_type_vec
+  ) %>%
+    mutate(
+      name_score = vapply(provider_name, function(x) name_match_score(restaurant, x), numeric(1)),
+      municipality_score = vapply(
+        seq_len(n()),
+        function(i) municipality_match_score(municipi, provider_city[i], provider_address[i]),
+        numeric(1)
+      ),
+      distance_score = vapply(provider_distance, distance_match_score, numeric(1)),
+      type_score = case_when(
+        provider_result_type %in% c("city", "county", "state", "postcode", "suburb", "district", "street") ~ 0,
+        is.na(provider_result_type) ~ 0.5,
+        TRUE ~ 1
+      ),
+      provider_match_score = 0.65 * name_score + 0.20 * municipality_score + 0.10 * distance_score + 0.05 * type_score
+    ) %>%
+    arrange(desc(provider_match_score), provider_distance)
+
+  best <- candidates %>% slice(1)
+
+  words_rest <- unlist(strsplit(normalize_txt(restaurant), " ", fixed = TRUE))
+  words_rest <- words_rest[words_rest != ""]
+  single_word_restaurant <- length(words_rest) <= 1
+
+  accepted <- !is.na(best$lat_provider[[1]]) &&
+    !is.na(best$lon_provider[[1]]) &&
+    if (single_word_restaurant) {
+      best$name_score[[1]] >= 0.40 && best$provider_match_score[[1]] >= 0.45
+    } else {
+      best$name_score[[1]] >= 0.55 && best$provider_match_score[[1]] >= 0.60
+    }
+
+  tibble(
+    place_id_provider = if (accepted) best$place_id_provider[[1]] else NA_character_,
+    provider_address = if (accepted) best$provider_address[[1]] else NA_character_,
+    lat_provider = if (accepted) best$lat_provider[[1]] else NA_real_,
+    lon_provider = if (accepted) best$lon_provider[[1]] else NA_real_,
+    fuente_provider = if (accepted) "GeoapifyText" else NA_character_,
+    provider_match_score = best$provider_match_score[[1]],
+    provider_candidate_name = best$provider_name[[1]],
+    provider_candidate_city = best$provider_city[[1]],
+    provider_candidate_categories = best$provider_result_type[[1]],
+    provider_distance = best$provider_distance[[1]],
+    provider_match_status = if (accepted) "aceptado_texto" else "rechazado_texto"
+  )
+}
+
 # --------------------------------
 # lectura de datos
 # --------------------------------
@@ -674,14 +810,13 @@ if (nrow(city_lookup) > 0 && geoapify_api_key != "") {
       city_lon = NA_real_
     )
 }
-
 # --------------------------------
 # Geoapify solo para los no resueltos por OSM
 # --------------------------------
 
 faltan_provider <- restaurants %>%
   filter(is.na(lat) | is.na(lon)) %>%
-  select(row_id, restaurant, municipi, city_lat, city_lon)
+  select(row_id, restaurant, municipi, pais, query_final, city_lat, city_lon)
 
 if (nrow(faltan_provider) > 0 && geoapify_api_key != "") {
   message("Consultando Geoapify para ", nrow(faltan_provider), " registros...")
@@ -691,10 +826,12 @@ if (nrow(faltan_provider) > 0 && geoapify_api_key != "") {
       faltan_provider$row_id,
       faltan_provider$restaurant,
       faltan_provider$municipi,
+      faltan_provider$pais,
+      faltan_provider$query_final,
       faltan_provider$city_lat,
       faltan_provider$city_lon
     ),
-    function(row_id, restaurant, municipi, city_lat, city_lon) {
+    function(row_id, restaurant, municipi, pais, query_final, city_lat, city_lon) {
       Sys.sleep(0.25)
 
       res <- buscar_geoapify_place(
@@ -705,12 +842,25 @@ if (nrow(faltan_provider) > 0 && geoapify_api_key != "") {
         api_key = geoapify_api_key
       )
 
+      if (is.na(res$lat_provider[[1]]) || is.na(res$lon_provider[[1]])) {
+        res <- buscar_geoapify_text(
+          query = query_final,
+          restaurant = restaurant,
+          municipi = municipi,
+          city_lat = city_lat,
+          city_lon = city_lon,
+          api_key = geoapify_api_key
+        )
+      }
+
       message(
-        "Geoapify | restaurant=", ifelse(is.na(restaurant), "NA", restaurant),
+        "Geoapify | query=", ifelse(is.na(query_final), "NA", query_final),
+        " | restaurant=", ifelse(is.na(restaurant), "NA", restaurant),
         " | municipi=", ifelse(is.na(municipi), "NA", municipi),
         " | candidato=", ifelse(is.na(res$provider_candidate_name[[1]]), "NA", res$provider_candidate_name[[1]]),
         " | score=", ifelse(is.na(res$provider_match_score[[1]]), "NA", round(res$provider_match_score[[1]], 3)),
-        " | status=", ifelse(is.na(res$provider_match_status[[1]]), "NA", res$provider_match_status[[1]])
+        " | status=", ifelse(is.na(res$provider_match_status[[1]]), "NA", res$provider_match_status[[1]]),
+        " | fuente=", ifelse(is.na(res$fuente_provider[[1]]), "NA", res$fuente_provider[[1]])
       )
 
       tibble(
@@ -740,7 +890,7 @@ if (nrow(faltan_provider) > 0 && geoapify_api_key != "") {
       fuente_coords = case_when(
         has_manual_coords ~ "Manual",
         !is.na(fuente_coords) ~ fuente_coords,
-        !is.na(lat_provider) & !is.na(lon_provider) ~ "Geoapify",
+        !is.na(lat_provider) & !is.na(lon_provider) ~ fuente_provider,
         TRUE ~ NA_character_
       )
     ) %>%
@@ -750,7 +900,6 @@ if (nrow(faltan_provider) > 0 && geoapify_api_key != "") {
 } else if (nrow(faltan_provider) > 0 && geoapify_api_key == "") {
   message("No hay GEOAPIFY_API_KEY. Los registros no resueltos se quedarán sin coordenadas.")
 }
-
 # --------------------------------
 # visual
 # --------------------------------
