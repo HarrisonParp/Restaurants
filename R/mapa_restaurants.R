@@ -5,7 +5,6 @@ library(tidygeocoder)
 library(leaflet)
 library(htmlwidgets)
 dir.create("site", showWarnings = FALSE)
-dir.create("docs", showWarnings = FALSE)
 
 sheet_csv <- "https://docs.google.com/spreadsheets/d/13xaY1vjBYn31O5sApf3BuOiyvpnS5oGp2cc8dH4E0jQ/export?format=csv&gid=0"
 
@@ -141,5 +140,5 @@ mapa_restaurants <- leaflet(datos_mapa) %>%
     popup = ~popup,
     label = ~restaurant
   )
-dir.create("docs", showWarnings = FALSE)
-saveWidget(mapa_restaurants, "docs/index.html", selfcontained = TRUE)
+
+saveWidget(mapa_restaurants, "site/index.html", selfcontained = TRUE)
